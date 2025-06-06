@@ -6,6 +6,10 @@ const multer = require("multer");
 const path = require("path");
 const router = express.Router();
 
+const nodemailer = require("nodemailer");
+const crypto = require("crypto");
+
+
 const fs = require("fs");
 
 // ✅ Ensure the uploads directory exists
@@ -96,10 +100,15 @@ router.post("/login", (req, res) => {
         res.json({
             message: "Login successful",
             token,
-            user_id: user.id,
             role: user.role,
-            profile_picture: user.profile_picture || "default-profile.png" // ✅ Ensure there's always a profile picture
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                profile_picture: user.profile_picture || "default-profile.png"
+            }
         });
+        
     });
 });
 
@@ -133,6 +142,51 @@ router.post("/upload-profile", upload.single("profile_picture"), (req, res) => {
             profile_picture: profilePicture
         });
     });
+});
+
+router.post("/forgot-password", async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ message: "Email is required" });
+
+  db.query("SELECT * FROM users WHERE email = ?", [email], async (err, result) => {
+    if (err || result.length === 0) {
+      return res.status(200).json({ message: "Reset link sent if email exists." });
+    }
+
+    const user = result[0];
+    const resetToken = crypto.randomBytes(32).toString("hex");
+    const resetTokenExpiry = Date.now() + 3600000; // 1 hour
+
+    db.query(
+      "UPDATE users SET reset_token = ?, reset_token_expiry = ? WHERE email = ?",
+      [resetToken, resetTokenExpiry, email],
+      async (err) => {
+        if (err) return res.status(500).json({ message: "Database error" });
+
+        try {
+          const transporter = nodemailer.createTransport({
+            service: "Gmail",
+            auth: {
+              user: process.env.EMAIL_USER,
+              pass: process.env.EMAIL_PASS,
+            },
+          });
+
+          const resetLink = `http://localhost:3000/reset-password/${resetToken}`;
+          await transporter.sendMail({
+            to: email,
+            subject: "Password Reset Request",
+            html: `Click <a href="${resetLink}">here</a> to reset your password. This link expires in 1 hour.`,
+          });
+
+          res.status(200).json({ message: "Reset link sent to your email." });
+        } catch (emailError) {
+          console.error("Email error:", emailError);
+          res.status(500).json({ message: "Failed to send reset email." });
+        }
+      }
+    );
+  });
 });
 
 module.exports = router;
