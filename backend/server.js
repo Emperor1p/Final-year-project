@@ -23,6 +23,7 @@ const staffTransactionRoutes = require("./routes/staffTransaction");
 const activityRoutes = require("./routes/activity");
 const userRoutes = require("./routes/users");
 const analyticsRoutes = require("./routes/analytics");
+// const notificationRoutes = require("./routes/notifications");
 
 // Use Routes
 app.use("/api/auth", authRoutes);
@@ -35,6 +36,7 @@ app.use("/api/staff-transaction", staffTransactionRoutes);
 app.use("/api/activity", activityRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/analytics", analyticsRoutes);
+// app.use("/api/notifications", notificationRoutes);
 
 // Start Server
 const PORT = process.env.PORT || 5000;

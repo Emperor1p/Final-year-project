@@ -115,4 +115,13 @@ router.delete(
   }
 );
 
+// // backend/routes/users.js (partial, /permissions route)
+// if (!["view_products", "edit_products", "view_transactions", "make_sales", "assign_notifications"].includes(permission)) {
+//   console.error("[Users] Invalid permission:", permission);
+//   return res.status(400).json({ message: "Invalid permission" });
+// }
+// if (userRole === "staff" && !["view_products", "make_sales", "assign_notifications"].includes(permission)) {
+//   return res.status(400).json({ message: "Staff can only have view_products, make_sales, or assign_notifications permissions" });
+// }
+
 module.exports = router;
