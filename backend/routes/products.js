@@ -1,10 +1,12 @@
 const express = require("express");
-const db = require("../db");
 const router = express.Router();
+const db = require("../db");
 const upload = require("../middleware/upload");
-const authMiddleware = require("../middleware/auth"); // Import authMiddleware
+const authMiddleware = require("../middleware/auth");
+const checkPermission = require("../middleware/checkPermission");
+const logAction = require("../middleware/logAction");
 
-// GET all products
+// GET all products (public)
 router.get("/", (req, res) => {
   db.query("SELECT * FROM products", (err, result) => {
     if (err) return res.status(500).json({ message: "Database error" });
@@ -12,15 +14,16 @@ router.get("/", (req, res) => {
   });
 });
 
-router.get("/all", (req, res) => {
+// GET all products (authenticated, requires view_products)
+router.get("/all", authMiddleware, checkPermission("view_products"), (req, res) => {
   db.query("SELECT * FROM products", (err, result) => {
     if (err) return res.status(500).json({ message: "Database error" });
     res.json(result);
   });
 });
 
-// GET product by ID
-router.get("/:id", (req, res) => {
+// GET product by ID (authenticated, requires view_products)
+router.get("/:id", authMiddleware, checkPermission("view_products"), (req, res) => {
   const productId = req.params.id;
   db.query("SELECT * FROM products WHERE id = ?", [productId], (err, result) => {
     if (err) return res.status(500).json({ message: "Database error" });
@@ -29,12 +32,36 @@ router.get("/:id", (req, res) => {
   });
 });
 
-// DELETE product by ID
-router.delete("/delete/:id", (req, res) => {
+// GET product by barcode (authenticated, requires make_sales)
+router.get("/barcode/:code", authMiddleware, checkPermission("make_sales"), (req, res) => {
+  const { code } = req.params;
+  db.query(
+    "SELECT id, name, price, stock, barcode FROM products WHERE barcode = ?",
+    [code],
+    (err, results) => {
+      if (err) {
+        console.error("[Products] Error fetching product by barcode:", err);
+        return res.status(500).json({ message: "Database error", error: err.message });
+      }
+      if (results.length === 0) {
+        return res.status(404).json({ message: "Product not found" });
+      }
+      res.json(results[0]);
+    }
+  );
+});
+
+// DELETE product by ID (authenticated, admin only, requires edit_products)
+router.delete("/delete/:id", authMiddleware, checkPermission("edit_products"), logAction("Deleted product"), (req, res) => {
   const productId = req.params.id;
+
+  if (req.user.role !== "admin") {
+    return res.status(403).json({ message: "Access denied: Admins only" });
+  }
+
   db.query("DELETE FROM products WHERE id = ?", [productId], (err, result) => {
     if (err) {
-      console.error("Error deleting product:", err);
+      console.error("[Products] Error deleting product:", err);
       return res.status(500).json({ message: "Database error while deleting product" });
     }
     if (result.affectedRows === 0) {
@@ -44,10 +71,14 @@ router.delete("/delete/:id", (req, res) => {
   });
 });
 
-// ADD product (with image upload)
-router.post("/add", upload.single("image"), (req, res) => {
+// ADD product (authenticated, admin only, requires edit_products)
+router.post("/add", authMiddleware, checkPermission("edit_products"), logAction("Added product"), upload.single("image"), (req, res) => {
   const { name, stock, price, description, barcode } = req.body;
   const image = req.file ? req.file.filename : null;
+
+  if (req.user.role !== "admin") {
+    return res.status(403).json({ message: "Access denied: Admins only" });
+  }
 
   if (!name || !stock || !price || !description || !barcode) {
     return res.status(400).json({ message: "All fields are required." });
@@ -56,39 +87,50 @@ router.post("/add", upload.single("image"), (req, res) => {
   const query = "INSERT INTO products (name, stock, price, description, barcode, image) VALUES (?, ?, ?, ?, ?, ?)";
   db.query(query, [name, stock, price, description, barcode, image], (err, result) => {
     if (err) {
-      console.error("Error adding product:", err);
+      console.error("[Products] Error adding product:", err);
       return res.status(500).json({ message: "Database error while adding product." });
     }
     res.json({ message: "Product added successfully!" });
   });
 });
 
-// UPDATE product (with optional image upload)
-router.put("/update/:id", upload.single("image"), (req, res) => {
+// UPDATE product (authenticated, admin only, requires edit_products)
+router.put("/update/:id", authMiddleware, checkPermission("edit_products"), logAction("Updated product"), upload.single("image"), (req, res) => {
   const productId = req.params.id;
-  const { name, stock, price, description } = req.body;
+  const { name, stock, price, description, barcode } = req.body;
   const image = req.file ? req.file.filename : null;
 
+  if (req.user.role !== "admin") {
+    return res.status(403).json({ message: "Access denied: Admins only" });
+  }
+
+  if (!name || !stock || !price || !description || !barcode) {
+    return res.status(400).json({ message: "All fields are required." });
+  }
+
   const fields = image
-    ? [name, stock, price, description, image, productId]
-    : [name, stock, price, description, productId];
+    ? [name, stock, price, description, barcode, image, productId]
+    : [name, stock, price, description, barcode, productId];
 
   const query = image
-    ? "UPDATE products SET name = ?, stock = ?, price = ?, description = ?, image = ? WHERE id = ?"
-    : "UPDATE products SET name = ?, stock = ?, price = ?, description = ? WHERE id = ?";
+    ? "UPDATE products SET name = ?, stock = ?, price = ?, description = ?, barcode = ?, image = ? WHERE id = ?"
+    : "UPDATE products SET name = ?, stock = ?, price = ?, description = ?, barcode = ? WHERE id = ?";
 
-  db.query(query, fields, (err, result) => {
-    if (err) return res.status(500).json({ message: "Error updating product" });
+  db.query(query, fields, (err) => {
+    if (err) {
+      console.error("[Products] Error updating product:", err);
+      return res.status(500).json({ message: "Error updating product" });
+    }
     res.json({ message: "Product updated successfully" });
   });
 });
 
-// SELL product
-router.post("/sell", (req, res) => {
+// SELL product (authenticated, requires make_sales)
+router.post("/sell", authMiddleware, checkPermission("make_sales"), logAction("Sold product"), (req, res) => {
   const { productId, quantity, staffId } = req.body;
 
-  if (!staffId) {
-    return res.status(400).json({ message: "Missing staffId (user_id)" });
+  if (!staffId || staffId != req.user.id) {
+    return res.status(400).json({ message: "Invalid or missing staffId" });
   }
 
   db.query("SELECT * FROM products WHERE id = ?", [productId], (err, result) => {
@@ -111,7 +153,7 @@ router.post("/sell", (req, res) => {
         [productId, staffId, quantity, totalPrice],
         (err) => {
           if (err) {
-            console.error("Transaction error:", err);
+            console.error("[Products] Transaction error:", err);
             return res.status(500).json({ message: "Error recording transaction" });
           }
           res.json({ message: "Product sold successfully" });
@@ -121,90 +163,74 @@ router.post("/sell", (req, res) => {
   });
 });
 
-// GET product by barcode
-router.get("/barcode/:code", authMiddleware, (req, res) => {
-  const { code } = req.params;
-  db.query(
-    "SELECT id, name, price, stock, barcode FROM products WHERE barcode = ?",
-    [code],
-    (err, results) => {
-      if (err) {
-        return res.status(500).json({ message: "Database error", error: err });
-      }
-      if (results.length === 0) {
-        return res.status(404).json({ message: "Product not found" });
-      }
-      res.json(results[0]);
-    }
-  );
-});
-
-// CHECKOUT (bulk sell)
-router.post("/checkout", (req, res) => {
+// CHECKOUT (bulk sell, authenticated, requires make_sales)
+router.post("/checkout", authMiddleware, checkPermission("make_sales"), logAction("Checkout completed"), (req, res) => {
   const { items, staffId } = req.body;
 
-  if (!staffId) {
-    return res.status(400).json({ message: "Missing staffId (user_id)" });
+  if (!staffId || staffId != req.user.id) {
+    return res.status(400).json({ message: "Invalid or missing staffId" });
   }
 
   if (!items || !Array.isArray(items)) {
     return res.status(400).json({ message: "Invalid request format" });
   }
 
-  let processed = 0;
-  let hasError = false;
+  db.beginTransaction((err) => {
+    if (err) {
+      console.error("[Products] Transaction error:", err);
+      return res.status(500).json({ message: "Database error" });
+    }
 
-  items.forEach((item) => {
-    const { productId, quantity } = item;
-
-    db.query("SELECT * FROM products WHERE id = ?", [productId], (err, result) => {
-      if (hasError) return;
-      if (err) {
-        hasError = true;
-        return res.status(500).json({ message: "Database error while fetching product" });
-      }
-
-      if (!result || result.length === 0) {
-        hasError = true;
-        return res.status(404).json({ message: `Product ID ${productId} not found` });
-      }
-
-      const product = result[0];
-
-      if (product.stock < quantity) {
-        hasError = true;
-        return res.status(400).json({ message: `Not enough stock for product ID ${productId}` });
-      }
-
-      const newStock = product.stock - quantity;
-      const totalPrice = product.price * quantity;
-
-      db.query("UPDATE products SET stock = ? WHERE id = ?", [newStock, productId], (err) => {
-        if (hasError) return;
-        if (err) {
-          hasError = true;
-          return res.status(500).json({ message: "Error updating stock" });
-        }
-
+    const queries = items.map(({ productId, quantity }) => {
+      return new Promise((resolve, reject) => {
         db.query(
-          "INSERT INTO transactions (product_id, user_id, quantity, total_price, sold_at) VALUES (?, ?, ?, ?, NOW())",
-          [productId, staffId, quantity, totalPrice],
-          (err) => {
-            if (hasError) return;
-            if (err) {
-              console.error("Transaction error:", err);
-              hasError = true;
-              return res.status(500).json({ message: "Error recording transaction" });
+          "SELECT stock, price FROM products WHERE id = ? FOR UPDATE",
+          [productId],
+          (err, result) => {
+            if (err) return reject(err);
+            if (result.length === 0) return reject(new Error(`Product ID ${productId} not found`));
+            const { stock, price } = result[0];
+            if (stock < quantity) {
+              return reject(new Error(`Not enough stock for product ID ${productId}`));
             }
-
-            processed++;
-            if (processed === items.length) {
-              res.json({ message: "Checkout successful!" });
-            }
+            const newStock = stock - quantity;
+            const totalPrice = price * quantity;
+            db.query(
+              "UPDATE products SET stock = ? WHERE id = ?",
+              [newStock, productId],
+              (err) => {
+                if (err) return reject(err);
+                db.query(
+                  "INSERT INTO transactions (product_id, user_id, quantity, total_price, sold_at) VALUES (?, ?, ?, ?, NOW())",
+                  [productId, staffId, quantity, totalPrice],
+                  (err) => {
+                    if (err) return reject(err);
+                    resolve();
+                  }
+                );
+              }
+            );
           }
         );
       });
     });
+
+    Promise.all(queries)
+      .then(() => {
+        db.commit((err) => {
+          if (err) {
+            db.rollback(() => {});
+            console.error("[Products] Commit error:", err);
+            return res.status(500).json({ message: "Database error" });
+          }
+          res.json({ message: "Checkout successful!" });
+        });
+      })
+      .catch((err) => {
+        db.rollback(() => {});
+        console.error("[Products] Checkout error:", err.message);
+        res.status(400).json({ message: err.message });
+      });
   });
 });
 

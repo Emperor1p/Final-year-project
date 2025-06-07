@@ -1,21 +1,22 @@
 const jwt = require("jsonwebtoken");
 
-const authMiddleware = (req, res, next) => {
-  // Extract token from Authorization header (e.g., "Bearer <token>")
-  const token = req.header("Authorization")?.replace("Bearer ", "");
-  if (!token) {
-    return res.status(401).json({ message: "No token, authorization denied" });
+module.exports = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  console.log("[AuthMiddleware] Header:", authHeader);
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    console.warn("[AuthMiddleware] No token provided");
+    return res.status(401).json({ message: "No token provided" });
   }
 
+  const token = authHeader.split(" ")[1];
   try {
-    // Verify token using JWT_SECRET from .env
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded; // Attach user data (e.g., { id, role }) to request
-    next(); // Proceed to the next middleware/route handler
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || "your_jwt_secret");
+    console.log("[AuthMiddleware] Decoded:", decoded);
+    req.user = decoded; // { id, role }
+    next();
   } catch (error) {
-    console.error("Token verification error:", error);
-    res.status(401).json({ message: "Invalid token" });
+    console.error("[AuthMiddleware] Token Error:", error.message);
+    return res.status(401).json({ message: "Invalid token" });
   }
 };
-
-module.exports = authMiddleware;
