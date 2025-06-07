@@ -1,3 +1,4 @@
+// backend/routes/users.js
 const express = require("express");
 const router = express.Router();
 const db = require("../db");
@@ -39,66 +40,79 @@ router.get("/:id/permissions", authMiddleware, checkPermission("view_users"), (r
 });
 
 // POST assign permissions (admin only)
-router.post("/permissions", authMiddleware, checkPermission("assign_permissions"), logAction("Assigned permission"), (req, res) => {
-  const { userId, permission } = req.body;
-  if (req.user.role !== "admin") {
-    return res.status(403).json({ message: "Unauthorized Access" });
-  }
-  if (!userId || !permission) {
-    return res.status(400).json({ message: "User ID and permission are required" });
-  }
-  if (!["view_products", "edit_products", "view_transactions"].includes(permission)) {
-    return res.status(400).json({ message: "Invalid permission" });
-  }
-
-  // Check user's role
-  db.query("SELECT role FROM users WHERE id = ?", [userId], (err, result) => {
-    if (err) {
-      console.error("[Users] Error checking user role:", err);
-      return res.status(500).json({ message: "Database error" });
+router.post(
+  "/permissions",
+  authMiddleware,
+  checkPermission("assign_permissions"),
+  logAction("Assigned permission"),
+  (req, res) => {
+    const { userId, permission } = req.body;
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ message: "Unauthorized Access" });
     }
-    if (result.length === 0) {
-      return res.status(404).json({ message: "User not found" });
+    if (!userId || !permission) {
+      return res.status(400).json({ message: "User ID and permission are required" });
     }
-    const userRole = result[0].role;
-    if (userRole === "staff" && !["view_products"].includes(permission)) {
-      return res.status(400).json({ message: "Staff can only have view_products permission" });
+    if (!["view_products", "edit_products", "view_transactions", "make_sales"].includes(permission)) {
+      console.error("[Users] Invalid permission:", permission);
+      return res.status(400).json({ message: "Invalid permission" });
     }
 
-    db.query(
-      "INSERT INTO permissions (user_id, permission) VALUES (?, ?) ON DUPLICATE KEY UPDATE permission = ?",
-      [userId, permission, permission],
-      (err) => {
-        if (err) {
-          console.error("[Users] Error assigning permission:", err);
-          return res.status(500).json({ message: "Database error while assigning permission" });
-        }
-        res.json({ message: "Permission assigned successfully" });
-      }
-    );
-  });
-});
-
-// DELETE permission (admin only)
-router.delete("/permissions", authMiddleware, checkPermission("assign_permissions"), logAction("Revoked permission"), (req, res) => {
-  const { userId, permission } = req.body;
-  if (!userId || !permission) {
-    return res.status(400).json({ message: "User ID and permission are required" });
-  }
-  db.query(
-    "DELETE FROM permissions WHERE user_id = ? AND permission = ?",
-    [userId, permission],
-    (err, result) => {
+    // Check user's role
+    db.query("SELECT role FROM users WHERE id = ?", [userId], (err, result) => {
       if (err) {
-        console.error("[Users] Error revoking permission:", err);
+        console.error("[Users] Error checking user role:", err);
         return res.status(500).json({ message: "Database error" });
       }
-      if (result.affectedRows === 0) {
-        return res.status(404).json({ message: "Permission not found" });
+      if (result.length === 0) {
+        return res.status(404).json({ message: "User not found" });
       }
-      res.json({ message: "Permission revoked successfully" });
+      const userRole = result[0].role;
+      if (userRole === "staff" && !["view_products", "make_sales"].includes(permission)) {
+        return res.status(400).json({ message: "Staff can only have view_products or make_sales permissions" });
+      }
+
+      db.query(
+        "INSERT INTO permissions (user_id, permission) VALUES (?, ?) ON DUPLICATE KEY UPDATE permission = ?",
+        [userId, permission, permission],
+        (err) => {
+          if (err) {
+            console.error("[Users] Error assigning permission:", err);
+            return res.status(500).json({ message: "Database error while assigning permission" });
+          }
+          res.json({ message: "Permission assigned successfully" });
+        }
+      );
+    });
+  }
+);
+
+// DELETE permission (admin only)
+router.delete(
+  "/permissions",
+  authMiddleware,
+  checkPermission("assign_permissions"),
+  logAction("Revoked permission"),
+  (req, res) => {
+    const { userId, permission } = req.body;
+    if (!userId || !permission) {
+      return res.status(400).json({ message: "User ID and permission are required" });
     }
-  );
-});
+    db.query(
+      "DELETE FROM permissions WHERE user_id = ? AND permission = ?",
+      [userId, permission],
+      (err, result) => {
+        if (err) {
+          console.error("[Users] Error revoking permission:", err);
+          return res.status(500).json({ message: "Database error" });
+        }
+        if (result.affectedRows === 0) {
+          return res.status(404).json({ message: "Permission not found" });
+        }
+        res.json({ message: "Permission revoked successfully" });
+      }
+    );
+  }
+);
 
 module.exports = router;
