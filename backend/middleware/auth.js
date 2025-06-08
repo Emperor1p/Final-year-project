@@ -1,4 +1,3 @@
-// backend/middleware/auth.js (create or update)
 const jwt = require("jsonwebtoken");
 
 module.exports = (req, res, next) => {
@@ -13,7 +12,7 @@ module.exports = (req, res, next) => {
   const token = authHeader.split(" ")[1];
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    console.log("[authMiddleware] Token decoded:", { userId: decoded.id }); // Debug
+    console.log("[authMiddleware] Token decoded:", { userId: decoded.id, role: decoded.role }); // Debug
     req.user = { id: decoded.id, role: decoded.role };
     next();
   } catch (err) {

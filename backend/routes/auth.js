@@ -8,7 +8,7 @@ const router = express.Router();
 const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 const fs = require("fs");
-const logAction = require("../middleware/logAction"); // Import logAction
+const logAction = require("../middleware/logAction");
 
 // Ensure the uploads directory exists
 const uploadDir = "./Uploads";
@@ -92,7 +92,8 @@ router.post("/login", async (req, res) => {
         { expiresIn: "1h" }
       );
 
-      console.log("Login successful, token generated:", token);
+      console.log("[auth] Login successful, token generated:", { userId: user.id, token });
+      // Store user_id and token in localStorage via response (client-side will handle this)
       res.json({ token, user: { id: user.id, name: user.name, role: user.role } });
     });
   } catch (error) {
@@ -100,6 +101,7 @@ router.post("/login", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+
 // Fetch User Details (Admin & Staff)
 router.get("/user/:id", (req, res) => {
     const userId = req.params.id;
