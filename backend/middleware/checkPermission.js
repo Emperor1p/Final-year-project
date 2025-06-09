@@ -6,7 +6,7 @@ module.exports = (permission) => {
       return res.status(401).json({ message: "Unauthorized: No user data" });
     }
     if (req.user.role === "admin") {
-      console.log("[checkPermission] Admin bypass:", { userId: req.user.id, permission }); // Debug
+      console.log("[checkPermission] Admin bypass:", { userId: req.user.id, permission });
       return next();
     }
     db.query(
@@ -21,7 +21,7 @@ module.exports = (permission) => {
           console.error("[checkPermission] Permission denied:", { userId: req.user.id, permission });
           return res.status(403).json({ message: "Permission denied" });
         }
-        console.log("[checkPermission] Permission granted:", { userId: req.user.id, permission }); // Debug
+        console.log("[checkPermission] Permission granted:", { userId: req.user.id, permission });
         next();
       }
     );

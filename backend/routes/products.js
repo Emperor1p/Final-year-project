@@ -311,4 +311,30 @@ router.post(
   }
 );
 
+// src/backend/product.js (or permissions.js)
+router.post("/permissions/request", authMiddleware, (req, res) => {
+  const { permission, userId: requesterId } = req.body;
+  const adminId = 1; // Replace with logic to find an admin ID
+
+  db.query(
+    "INSERT INTO permission_requests (requester_id, permission, status, created_at) VALUES (?, ?, 'pending', NOW())",
+    [requesterId, permission],
+    (err) => {
+      if (err) {
+        console.error("[Permissions] Error requesting permission:", err);
+        return res.status(500).json({ message: "Database error" });
+      }
+      // Emit to admin via WebSocket
+      if (req.app.get("socketio")) {
+        req.app.get("socketio").emit("permissionRequest", {
+          requesterId,
+          permission,
+          timestamp: new Date().toISOString(),
+        });
+      }
+      res.json({ message: "Permission request sent" });
+    }
+  );
+});
+
 module.exports = router;
