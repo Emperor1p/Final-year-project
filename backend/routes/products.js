@@ -82,17 +82,36 @@ router.delete(
       return res.status(403).json({ message: "Access denied: Admins only" });
     }
 
-    db.query("DELETE FROM products WHERE id = ?", [productId], (err, result) => {
+    // Check if product exists
+    db.query("SELECT id, created_at FROM products WHERE id = ?", [productId], (err, result) => {
       if (err) {
-        console.error("[Products] Error deleting product:", err);
-        return res
-          .status(500)
-          .json({ message: "Database error while deleting product" });
+        console.error("[Products] Error checking product:", err);
+        return res.status(500).json({ message: "Database error" });
       }
-      if (result.affectedRows === 0) {
+      if (result.length === 0) {
         return res.status(404).json({ message: "Product not found" });
       }
-      res.json({ message: "Product deleted successfully" });
+
+      // Log to product_history
+      db.query(
+        "INSERT INTO product_history (product_id, created_at, deleted_at) VALUES (?, ?, NOW())",
+        [productId, result[0].created_at],
+        (err) => {
+          if (err) {
+            console.error("[Products] Error logging to product_history:", err);
+            return res.status(500).json({ message: "Error logging deletion" });
+          }
+
+          // Delete from products
+          db.query("DELETE FROM products WHERE id = ?", [productId], (err, result) => {
+            if (err) {
+              console.error("[Products] Error deleting product:", err);
+              return res.status(500).json({ message: "Database error while deleting product" });
+            }
+            res.json({ message: "Product deleted successfully" });
+          });
+        }
+      );
     });
   }
 );

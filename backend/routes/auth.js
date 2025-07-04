@@ -9,6 +9,7 @@ const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 const fs = require("fs");
 const logAction = require("../middleware/logAction");
+const authMiddleware = require("../middleware/auth");
 
 // Ensure the uploads directory exists
 const uploadDir = "./Uploads";
@@ -65,45 +66,60 @@ router.post("/signup", upload.single("profile_picture"), async (req, res) => {
 
 // User Login with logging
 router.post("/login", async (req, res) => {
-  const { email, password } = req.body;
-  try {
-    if (!email || !password) {
-      return res.status(400).json({ message: "Email and password required" });
+    const { email, password } = req.body;
+    try {
+        if (!email || !password) {
+            return res.status(400).json({ message: "Email and password required" });
+        }
+
+        db.query("SELECT * FROM users WHERE email = ?", [email], async (err, results) => {
+            if (err) {
+                console.error("Database error:", err);
+                return res.status(500).json({ message: "Server error" });
+            }
+            if (results.length === 0) {
+                return res.status(401).json({ message: "Invalid credentials" });
+            }
+
+            const user = results[0];
+            const isMatch = await bcrypt.compare(password, user.password);
+            if (!isMatch) {
+                return res.status(401).json({ message: "Invalid credentials" });
+            }
+
+            const token = jwt.sign(
+                { id: user.id, role: user.role },
+                process.env.JWT_SECRET,
+                { expiresIn: "1h" }
+            );
+
+            console.log("[auth] Login successful, token generated:", { userId: user.id, token });
+            req.user = { id: user.id, role: user.role }; // Set req.user for logAction
+            logAction("login")(req, res, () => {
+                res.json({ token, user: { id: user.id, name: user.name, role: user.role } });
+            });
+        });
+    } catch (error) {
+        console.error("Login error:", error);
+        res.status(500).json({ message: "Server error" });
     }
+});
 
-    db.query("SELECT * FROM users WHERE email = ?", [email], async (err, results) => {
-      if (err) {
-        console.error("Database error:", err);
-        return res.status(500).json({ message: "Server error" });
-      }
-      if (results.length === 0) {
-        return res.status(401).json({ message: "Invalid credentials" });
-      }
-
-      const user = results[0];
-      const isMatch = await bcrypt.compare(password, user.password);
-      if (!isMatch) {
-        return res.status(401).json({ message: "Invalid credentials" });
-      }
-
-      const token = jwt.sign(
-        { id: user.id, role: user.role },
-        process.env.JWT_SECRET,
-        { expiresIn: "1h" }
-      );
-
-      console.log("[auth] Login successful, token generated:", { userId: user.id, token });
-      // Store user_id and token in localStorage via response (client-side will handle this)
-      res.json({ token, user: { id: user.id, name: user.name, role: user.role } });
-    });
-  } catch (error) {
-    console.error("Login error:", error);
-    res.status(500).json({ message: "Server error" });
-  }
+// User Logout with logging
+router.post("/logout", authMiddleware, (req, res) => {
+    try {
+        // Note: localStorage.removeItem("authToken") is client-side; server only responds
+        logAction("logout")(req, res, () => {
+            res.json({ message: "Logged out successfully" });
+        });
+    } catch (error) {
+        console.error("Logout error:", error);
+        res.status(500).json({ message: "Server error" });
+    }
 });
 
 // Fetch User Details (Admin & Staff)
-router.get("/user/:id", (req, res) => {
+router.get("/user/:id", authMiddleware, (req, res) => {
     const userId = req.params.id;
 
     db.query("SELECT id, name, email, role, profile_picture FROM users WHERE id = ?", [userId], (err, results) => {
@@ -114,7 +130,7 @@ router.get("/user/:id", (req, res) => {
 });
 
 // Update Profile Picture (for existing users)
-router.post("/upload-profile", upload.single("profile_picture"), (req, res) => {
+router.post("/upload-profile", authMiddleware, upload.single("profile_picture"), (req, res) => {
     const { user_id } = req.body;
 
     if (!req.file) {
