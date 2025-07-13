@@ -21,7 +21,7 @@ if (!fs.existsSync(uploadDir)) {
 // Multer Setup for Image Uploads
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        cb(null, "uploads/");
+        cb(null, "Uploads/");
     },
     filename: (req, file, cb) => {
         cb(null, Date.now() + path.extname(file.originalname));
@@ -74,7 +74,7 @@ router.post("/login", async (req, res) => {
 
         db.query("SELECT * FROM users WHERE email = ?", [email], async (err, results) => {
             if (err) {
-                console.error("Database error:", err);
+                console.error("[auth] Database error:", err);
                 return res.status(500).json({ message: "Server error" });
             }
             if (results.length === 0) {
@@ -100,7 +100,7 @@ router.post("/login", async (req, res) => {
             });
         });
     } catch (error) {
-        console.error("Login error:", error);
+        console.error("[auth] Login error:", error);
         res.status(500).json({ message: "Server error" });
     }
 });
@@ -108,12 +108,11 @@ router.post("/login", async (req, res) => {
 // User Logout with logging
 router.post("/logout", authMiddleware, (req, res) => {
     try {
-        // Note: localStorage.removeItem("authToken") is client-side; server only responds
         logAction("logout")(req, res, () => {
             res.json({ message: "Logged out successfully" });
         });
     } catch (error) {
-        console.error("Logout error:", error);
+        console.error("[auth] Logout error:", error);
         res.status(500).json({ message: "Server error" });
     }
 });
@@ -153,41 +152,99 @@ router.post("/forgot-password", async (req, res) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ message: "Email is required" });
 
+    if (!process.env.RESET_SECRET) {
+        console.error("[auth] RESET_SECRET is not defined in environment variables");
+        return res.status(500).json({ message: "Server configuration error" });
+    }
+
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+        console.error("[auth] Email configuration missing:", {
+            EMAIL_USER: process.env.EMAIL_USER,
+            EMAIL_PASS: process.env.EMAIL_PASS ? "****" : undefined
+        });
+        return res.status(500).json({ message: "Email configuration error" });
+    }
+
     db.query("SELECT * FROM users WHERE email = ?", [email], async (err, result) => {
-        if (err || result.length === 0) {
-            return res.status(200).json({ message: "Reset link sent if email exists." });
+        if (err) {
+            console.error("[auth] Database error:", err);
+            return res.status(500).json({ message: "Database error", error: err });
+        }
+        if (result.length === 0) {
+            return res.status(404).json({ message: "Email not found" });
         }
 
         const user = result[0];
-        const resetToken = crypto.randomBytes(32).toString("hex");
-        const resetTokenExpiry = Date.now() + 3600000; // 1 hour
+        try {
+            const token = jwt.sign({ id: user.id }, process.env.RESET_SECRET, { expiresIn: "1h" });
+            const resetTokenExpiry = Date.now() + 3600000; // 1 hour
+
+            db.query(
+                "UPDATE users SET reset_token = ?, reset_token_expiry = ? WHERE email = ?",
+                [token, resetTokenExpiry, email],
+                async (err) => {
+                    if (err) {
+                        console.error("[auth] Database error updating reset token:", err);
+                        return res.status(500).json({ message: "Database error" });
+                    }
+                    try {
+                        const transporter = nodemailer.createTransport({
+                            host: "smtp.gmail.com",
+                            port: 587,
+                            secure: false, // Use TLS
+                            auth: {
+                                user: process.env.EMAIL_USER,
+                                pass: process.env.EMAIL_PASS
+                            }
+                        });
+
+                        const resetLink = `http://localhost:3000/reset-password/${token}`;
+                        await transporter.sendMail({
+                            from: `"Inventory Store" <${process.env.EMAIL_USER}>`,
+                            to: email,
+                            subject: "Password Reset Request",
+                            text: `Click the following link to reset your password: ${resetLink}\nThis link expires in 1 hour.`,
+                            html: `<p>Click <a href="${resetLink}">here</a> to reset your password. This link expires in 1 hour.</p>`
+                        });
+
+                        console.log("[auth] Reset link sent:", { email, resetLink });
+                        res.status(200).json({ message: "Reset link sent to your email." });
+                    } catch (emailError) {
+                        console.error("[auth] Email sending error:", {
+                            message: emailError.message,
+                            code: emailError.code,
+                            response: emailError.response
+                        });
+                        res.status(500).json({ message: "Failed to send reset email. Please try again." });
+                    }
+                }
+            );
+        } catch (jwtError) {
+            console.error("[auth] JWT signing error:", jwtError);
+            res.status(500).json({ message: "Error generating reset token" });
+        }
+    });
+});
+
+// Reset Password
+router.post("/reset-password", async (req, res) => {
+    const { token, password } = req.body;
+    if (!token || !password) return res.status(400).json({ message: "Token and password are required" });
+
+    db.query("SELECT * FROM users WHERE reset_token = ? AND reset_token_expiry > ?", [token, Date.now()], async (err, result) => {
+        if (err) return res.status(500).json({ message: "Database error", error: err });
+        if (result.length === 0) return res.status(400).json({ message: "Invalid or expired token" });
+
+        const user = result[0];
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
 
         db.query(
-            "UPDATE users SET reset_token = ?, reset_token_expiry = ? WHERE email = ?",
-            [resetToken, resetTokenExpiry, email],
-            async (err) => {
+            "UPDATE users SET password = ?, reset_token = NULL, reset_token_expiry = NULL WHERE id = ?",
+            [hashedPassword, user.id],
+            (err) => {
                 if (err) return res.status(500).json({ message: "Database error" });
-                try {
-                    const transporter = nodemailer.createTransport({
-                        service: "Gmail",
-                        auth: {
-                            user: process.env.EMAIL_USER,
-                            pass: process.env.EMAIL_PASS
-                        }
-                    });
-
-                    const resetLink = `http://localhost:3000/reset-password/${resetToken}`;
-                    await transporter.sendMail({
-                        to: email,
-                        subject: "Password Reset Request",
-                        html: `Click <a href="${resetLink}">here</a> to reset your password. This link expires in 1 hour.`
-                    });
-
-                    res.status(200).json({ message: "Reset link sent to your email." });
-                } catch (emailError) {
-                    console.error("Email error:", emailError);
-                    res.status(500).json({ message: "Failed to send reset email." });
-                }
+                res.status(200).json({ message: "Password reset successful" });
             }
         );
     });
