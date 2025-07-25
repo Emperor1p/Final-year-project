@@ -5,6 +5,7 @@ const upload = require("../middleware/upload");
 const authMiddleware = require("../middleware/auth");
 const checkPermission = require("../middleware/checkPermission");
 const logAction = require("../middleware/logAction");
+const crypto = require("crypto");
 
 // GET all products (public)
 router.get("/", (req, res) => {
@@ -15,59 +16,105 @@ router.get("/", (req, res) => {
 });
 
 // GET all products (authenticated, requires view_products)
-router.get(
-  "/all",
-  authMiddleware,
-  checkPermission("view_products"),
-  (req, res) => {
-    db.query("SELECT * FROM products", (err, result) => {
-      if (err) return res.status(500).json({ message: "Database error" });
-      res.json(result);
-    });
-  }
-);
+router.get("/all", authMiddleware, checkPermission("view_products"), (req, res) => {
+  db.query("SELECT * FROM products", (err, result) => {
+    if (err) return res.status(500).json({ message: "Database error" });
+    res.json(result);
+  });
+});
 
 // GET product by ID (authenticated, requires view_products)
-router.get(
-  "/:id",
-  authMiddleware,
-  checkPermission("view_products"),
-  (req, res) => {
-    const productId = req.params.id;
-    db.query("SELECT * FROM products WHERE id = ?", [productId], (err, result) => {
-      if (err) return res.status(500).json({ message: "Database error" });
-      if (result.length === 0)
-        return res.status(404).json({ message: "Product not found" });
-      res.json(result[0]);
-    });
-  }
-);
+router.get("/:id", authMiddleware, checkPermission("view_products"), (req, res) => {
+  const productId = req.params.id;
+  db.query("SELECT * FROM products WHERE id = ?", [productId], (err, result) => {
+    if (err) return res.status(500).json({ message: "Database error" });
+    if (result.length === 0) return res.status(404).json({ message: "Product not found" });
+    res.json(result[0]);
+  });
+});
 
 // GET product by barcode (authenticated, requires make_sales)
-router.get(
-  "/barcode/:code",
-  authMiddleware,
-  checkPermission("make_sales"),
-  (req, res) => {
-    const { code } = req.params;
+router.get("/barcode/:code", authMiddleware, checkPermission("make_sales"), (req, res) => {
+  const { code } = req.params;
+  db.query(
+    "SELECT id, name, price, stock, barcode, description, image, signature FROM products WHERE barcode = ?",
+    [code],
+    (err, results) => {
+      if (err) {
+        console.error("[Products] Error fetching product by barcode:", err);
+        return res.status(500).json({ message: "Database error", error: err.message });
+      }
+      if (results.length === 0) {
+        return res.status(404).json({ message: "Product not found" });
+      }
+      res.json(results[0]);
+    }
+  );
+});
+
+// VERIFY barcode
+router.get("/verify", (req, res) => {
+  const { barcode, signature } = req.query;
+  const privateKey = process.env.PRIVATE_KEY || "your-secure-private-key";
+
+  db.query("SELECT * FROM products WHERE barcode = ?", [barcode], (err, results) => {
+    if (err) {
+      console.error("[Products] Error fetching product:", err);
+      return res.status(500).json({ message: "Database error" });
+    }
+    if (results.length === 0) {
+      return res.status(404).json({ message: "Product not found" });
+    }
+
+    const product = results[0];
+    const expectedSignature = crypto
+      .createHmac("sha256", privateKey)
+      .update(barcode)
+      .digest("hex");
+
+    if (expectedSignature !== signature) {
+      return res.status(400).json({ message: "Invalid barcode signature" });
+    }
+
     db.query(
-      "SELECT id, name, price, stock, barcode FROM products WHERE barcode = ?",
-      [code],
-      (err, results) => {
+      "SELECT COUNT(*) as scanCount FROM scans WHERE barcode = ?",
+      [barcode],
+      (err, scanResults) => {
         if (err) {
-          console.error("[Products] Error fetching product by barcode:", err);
-          return res
-            .status(500)
-            .json({ message: "Database error", error: err.message });
+          console.error("[Products] Error checking scans:", err);
+          return res.status(500).json({ message: "Database error" });
         }
-        if (results.length === 0) {
-          return res.status(404).json({ message: "Product not found" });
+        if (scanResults[0].scanCount >= 1) {
+          return res.status(400).json({ message: "Barcode already used" });
         }
-        res.json(results[0]);
+
+        db.query(
+          "INSERT INTO scans (barcode, signature, ip_address, device_info) VALUES (?, ?, ?, ?)",
+          [barcode, signature, req.ip, req.headers["user-agent"]],
+          (err) => {
+            if (err) {
+              console.error("[Products] Error logging scan:", err);
+              return res.status(500).json({ message: "Error logging scan" });
+            }
+            res.json({
+              message: "Valid barcode",
+              product: {
+                id: product.id,
+                name: product.name,
+                price: product.price,
+                stock: product.stock,
+                description: product.description,
+                barcode: product.barcode,
+                image: product.image,
+                signature: product.signature,
+              },
+            });
+          }
+        );
       }
     );
-  }
-);
+  });
+});
 
 // DELETE product by ID (authenticated, admin only, requires edit_products)
 router.delete(
@@ -82,7 +129,6 @@ router.delete(
       return res.status(403).json({ message: "Access denied: Admins only" });
     }
 
-    // Check if product exists
     db.query("SELECT id, created_at FROM products WHERE id = ?", [productId], (err, result) => {
       if (err) {
         console.error("[Products] Error checking product:", err);
@@ -92,7 +138,6 @@ router.delete(
         return res.status(404).json({ message: "Product not found" });
       }
 
-      // Log to product_history
       db.query(
         "INSERT INTO product_history (product_id, created_at, deleted_at) VALUES (?, ?, NOW())",
         [productId, result[0].created_at],
@@ -102,7 +147,6 @@ router.delete(
             return res.status(500).json({ message: "Error logging deletion" });
           }
 
-          // Delete from products
           db.query("DELETE FROM products WHERE id = ?", [productId], (err, result) => {
             if (err) {
               console.error("[Products] Error deleting product:", err);
@@ -135,19 +179,20 @@ router.post(
       return res.status(400).json({ message: "All fields are required." });
     }
 
+    const privateKey = process.env.PRIVATE_KEY || "your-secure-private-key";
+    const signature = crypto.createHmac("sha256", privateKey).update(barcode).digest("hex");
+
     const query =
-      "INSERT INTO products (name, stock, price, description, barcode, image) VALUES (?, ?, ?, ?, ?, ?)";
+      "INSERT INTO products (name, stock, price, description, barcode, image, signature) VALUES (?, ?, ?, ?, ?, ?, ?)";
     db.query(
       query,
-      [name, stock, price, description, barcode, image],
+      [name, stock, price, description, barcode, image, signature],
       (err, result) => {
         if (err) {
           console.error("[Products] Error adding product:", err);
-          return res
-            .status(500)
-            .json({ message: "Database error while adding product." });
+          return res.status(500).json({ message: "Database error while adding product." });
         }
-        res.json({ message: "Product added successfully!" });
+        res.json({ message: "Product added successfully!", barcode, signature });
       }
     );
   }
@@ -173,13 +218,16 @@ router.put(
       return res.status(400).json({ message: "All fields are required." });
     }
 
+    const privateKey = process.env.PRIVATE_KEY || "your-secure-private-key";
+    const signature = crypto.createHmac("sha256", privateKey).update(barcode).digest("hex");
+
     const fields = image
-      ? [name, stock, price, description, barcode, image, productId]
-      : [name, stock, price, description, barcode, productId];
+      ? [name, stock, price, description, barcode, signature, image, productId]
+      : [name, stock, price, description, barcode, signature, productId];
 
     const query = image
-      ? "UPDATE products SET name = ?, stock = ?, price = ?, description = ?, barcode = ?, image = ? WHERE id = ?"
-      : "UPDATE products SET name = ?, stock = ?, price = ?, description = ?, barcode = ? WHERE id = ?";
+      ? "UPDATE products SET name = ?, stock = ?, price = ?, description = ?, barcode = ?, signature = ?, image = ? WHERE id = ?"
+      : "UPDATE products SET name = ?, stock = ?, price = ?, description = ?, barcode = ?, signature = ? WHERE id = ?";
 
     db.query(query, fields, (err) => {
       if (err) {
@@ -204,46 +252,38 @@ router.post(
       return res.status(400).json({ message: "Invalid or missing staffId" });
     }
 
-    db.query(
-      "SELECT * FROM products WHERE id = ?",
-      [productId],
-      (err, result) => {
-        if (err) return res.status(500).json({ message: "Database error" });
-        if (result.length === 0)
-          return res.status(404).json({ message: "Product not found" });
+    db.query("SELECT * FROM products WHERE id = ?", [productId], (err, result) => {
+      if (err) return res.status(500).json({ message: "Database error" });
+      if (result.length === 0) return res.status(404).json({ message: "Product not found" });
 
-        const product = result[0];
-        if (product.stock < quantity) {
-          return res.status(400).json({ message: "Insufficient stock" });
-        }
-
-        const newStock = product.stock - quantity;
-        const totalPrice = product.price * quantity;
-
-        db.query(
-          "UPDATE products SET stock = ? WHERE id = ?",
-          [newStock, productId],
-          (err) => {
-            if (err)
-              return res.status(500).json({ message: "Error updating stock" });
-
-            db.query(
-              "INSERT INTO transactions (product_id, user_id, quantity, total_price, sold_at) VALUES (?, ?, ?, ?, NOW())",
-              [productId, staffId, quantity, totalPrice],
-              (err) => {
-                if (err) {
-                  console.error("[Products] Transaction error:", err);
-                  return res
-                    .status(500)
-                    .json({ message: "Error recording transaction" });
-                }
-                res.json({ message: "Product sold successfully" });
-              }
-            );
-          }
-        );
+      const product = result[0];
+      if (product.stock < quantity) {
+        return res.status(400).json({ message: "Insufficient stock" });
       }
-    );
+
+      const newStock = product.stock - quantity;
+      const totalPrice = product.price * quantity;
+
+      db.query(
+        "UPDATE products SET stock = ? WHERE id = ?",
+        [newStock, productId],
+        (err) => {
+          if (err) return res.status(500).json({ message: "Error updating stock" });
+
+          db.query(
+            "INSERT INTO transactions (product_id, user_id, quantity, total_price, sold_at) VALUES (?, ?, ?, ?, NOW())",
+            [productId, staffId, quantity, totalPrice],
+            (err) => {
+              if (err) {
+                console.error("[Products] Transaction error:", err);
+                return res.status(500).json({ message: "Error recording transaction" });
+              }
+              res.json({ message: "Product sold successfully" });
+            }
+          );
+        }
+      );
+    });
   }
 );
 
@@ -264,7 +304,7 @@ router.post(
       return res.status(400).json({ message: "Invalid request format" });
     }
 
-    console.log("[Products] Checkout started:", { staffId, items }); // Debug
+    console.log("[Products] Checkout started:", { staffId, items });
 
     db.beginTransaction((err) => {
       if (err) {
@@ -283,9 +323,7 @@ router.post(
                 return reject(new Error(`Product ID ${productId} not found`));
               const { stock, price } = result[0];
               if (stock < quantity) {
-                return reject(
-                  new Error(`Not enough stock for product ID ${productId}`)
-                );
+                return reject(new Error(`Not enough stock for product ID ${productId}`));
               }
               const newStock = stock - quantity;
               const totalPrice = price * quantity;
@@ -317,7 +355,7 @@ router.post(
               console.error("[Products] Commit error:", err);
               return res.status(500).json({ message: "Database error" });
             }
-            console.log("[Products] Checkout successful:", { staffId, items }); // Debug
+            console.log("[Products] Checkout successful:", { staffId, items });
             res.json({ message: "Checkout successful!" });
           });
         })
@@ -329,31 +367,5 @@ router.post(
     });
   }
 );
-
-// src/backend/product.js (or permissions.js)
-router.post("/permissions/request", authMiddleware, (req, res) => {
-  const { permission, userId: requesterId } = req.body;
-  const adminId = 1; // Replace with logic to find an admin ID
-
-  db.query(
-    "INSERT INTO permission_requests (requester_id, permission, status, created_at) VALUES (?, ?, 'pending', NOW())",
-    [requesterId, permission],
-    (err) => {
-      if (err) {
-        console.error("[Permissions] Error requesting permission:", err);
-        return res.status(500).json({ message: "Database error" });
-      }
-      // Emit to admin via WebSocket
-      if (req.app.get("socketio")) {
-        req.app.get("socketio").emit("permissionRequest", {
-          requesterId,
-          permission,
-          timestamp: new Date().toISOString(),
-        });
-      }
-      res.json({ message: "Permission request sent" });
-    }
-  );
-});
 
 module.exports = router;
